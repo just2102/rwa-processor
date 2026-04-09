@@ -1,6 +1,13 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { RedisService } from '@liaoliaots/nestjs-redis';
-import { createWalletClient, Hex, http, WalletClient } from 'viem';
+import {
+  createPublicClient,
+  createWalletClient,
+  Hex,
+  http,
+  PublicClient,
+  WalletClient,
+} from 'viem';
 import { Address, privateKeyToAccount } from 'viem/accounts';
 import { SUPPORTED_CHAINS } from 'src/common';
 import { ConfigService } from 'src/common/providers';
@@ -14,27 +21,33 @@ export class BlockchainService implements OnModuleInit {
 
   //   mapping by chainId
   private walletClients: Record<number, WalletClient> = {};
+  private publicClients: Record<number, PublicClient> = {};
+  private readonly logger = new Logger(BlockchainService.name);
 
-  onModuleInit() {
+  async onModuleInit() {
+    const pkToUse = this.config.get('blockchain.privateKey');
+    if (!pkToUse) throw new Error('Private key is not defined');
+    const account = privateKeyToAccount(pkToUse);
+
     for (const chain of Object.values(SUPPORTED_CHAINS)) {
-      // todo: use chain-specific rpc and pks
       const rpcToUse = chain.rpcUrls.default.http[0] ?? '';
-      const pkToUse = this.config.get('blockchain.privateKey');
 
-      if (!pkToUse) {
-        throw new Error('Private key is not defined');
-      }
-
-      const client = createWalletClient({
+      this.publicClients[chain.id] = createPublicClient({
         chain,
         transport: http(rpcToUse),
-        account: privateKeyToAccount(pkToUse),
       });
-      this.walletClients[chain.id] = client;
+
+      this.walletClients[chain.id] = createWalletClient({
+        chain,
+        transport: http(rpcToUse),
+        account,
+      });
+
+      await this.syncNonceWithChain(chain.id, account.address);
     }
   }
 
-  async getNextNonce(chainId: number): Promise<number> {
+  private async getNextNonce(chainId: number): Promise<number> {
     if (!this.walletClients[chainId] || !this.walletClients[chainId].account) {
       throw new Error('Wallet client is not initialized');
     }
@@ -42,10 +55,26 @@ export class BlockchainService implements OnModuleInit {
     const redis = this.redisService.getOrThrow();
     const key = `nonce:${this.walletClients[chainId].account.address.toLowerCase()}`;
 
+    // incr returns the new value
     return await redis.incr(key);
   }
 
-  async sendRwaTransaction({
+  private async syncNonceWithChain(chainId: number, address: Address) {
+    const redis = this.redisService.getOrThrow();
+    const publicClient = this.publicClients[chainId];
+    const key = `nonce:${address.toLowerCase()}`;
+
+    const onChainNonce = await publicClient.getTransactionCount({ address });
+
+    // only update redis if blockchain is ahead
+    const currentRedisNonce = await redis.get(key);
+    if (!currentRedisNonce || onChainNonce > parseInt(currentRedisNonce)) {
+      await redis.set(key, onChainNonce);
+      this.logger.log(`🔄 Synced Nonce for chain ${chainId}: ${onChainNonce}`);
+    }
+  }
+
+  public async sendRwaTransaction({
     to,
     data,
     chainId,
@@ -57,17 +86,18 @@ export class BlockchainService implements OnModuleInit {
     if (!this.walletClients[chainId] || !this.walletClients[chainId].account) {
       throw new Error('Wallet client is not initialized');
     }
+    if (!to) {
+      throw new Error('To address is not defined on this chain');
+    }
 
     const nonce = await this.getNextNonce(chainId);
 
-    // subtract 1 because 'incr' starts at 1, but Ethereum nonces start at 0
     const txResponse = await this.walletClients[chainId].sendTransaction({
       to,
       data,
       chain: this.walletClients[chainId].chain,
       account: this.walletClients[chainId].account,
       nonce: nonce - 1,
-      gasLimit: 200000,
     });
 
     return txResponse;

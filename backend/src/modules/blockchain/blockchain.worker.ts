@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { RabbitSubscribe, Nack } from '@golevelup/nestjs-rabbitmq';
 import { BlockchainService } from './blockchain.service';
-import { Hex } from 'viem';
+import { Address, encodeFunctionData } from 'viem';
+import { MintAbi } from 'src/common/constants/mint.abi';
+import { MINT_CONTRACT_ADDRESS } from 'src/common';
 
 @Injectable()
 export class BlockchainWorker {
@@ -13,19 +15,21 @@ export class BlockchainWorker {
     queue: 'rwa-mint-queue',
   })
   public async handleMint(msg: {
-    address: string;
+    address: Address;
     amount: string;
     chainId: number;
   }) {
     try {
       console.log(`🚀 Processing Mint for ${msg.address}...`);
 
-      const data = ('0x40c10f19' +
-        msg.address.replace('0x', '').padStart(64, '0') +
-        BigInt(msg.amount).toString(16).padStart(64, '0')) as Hex;
+      const data = encodeFunctionData({
+        abi: MintAbi,
+        functionName: 'mint',
+        args: [msg.address, BigInt(msg.amount)],
+      });
 
       const tx = await this.blockchainService.sendRwaTransaction({
-        to: '0x1111111111111111111111111111111111111111', // Dummy valid address length
+        to: MINT_CONTRACT_ADDRESS[msg.chainId],
         data,
         chainId: msg.chainId,
       });
@@ -34,8 +38,6 @@ export class BlockchainWorker {
     } catch (error) {
       console.error('❌ Blockchain Worker Error:', error);
 
-      // We do NOT want to infinitely requeue on persistent errors like Redis going down.
-      // Changing this to false will drop the message (or send it to a Dead Letter Exchange if configured).
       return new Nack(false);
     }
   }

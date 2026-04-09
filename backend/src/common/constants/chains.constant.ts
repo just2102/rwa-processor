@@ -1,7 +1,10 @@
-import { Chain, mainnet, polygon, sepolia } from 'viem/chains';
+import { Address } from 'viem';
+import { Chain, sepolia } from 'viem/chains';
 
 export const SUPPORTED_CHAINS: Record<number, Chain> = {
-  [mainnet.id]: mainnet,
   [sepolia.id]: sepolia,
-  [polygon.id]: polygon,
 } as const;
+
+export const MINT_CONTRACT_ADDRESS: Record<number, Address> = {
+  [sepolia.id]: '0x523Af6445F33Cc08aea2De9A9bc1Ba920978f3cF',
+};
