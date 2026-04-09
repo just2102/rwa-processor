@@ -1,5 +1,0 @@
-packages:
-  - 'packages/*'
-  - 'apps/*'
-  - '!**/test/**'
-minimumReleaseAge: 10080
